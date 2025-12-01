@@ -169,8 +169,7 @@
 - M4: 通貨ペア追加・config駆動化
 - M5: stg/prod 環境向け構成案（別マシン or サーバ運用）
 
-
-
+===
 
 # forex03 Data Layer 要件定義書 v1.0
 
