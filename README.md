@@ -154,3 +154,5 @@ All data is stored in **Parquet format** for efficient storage and fast analysis
 
 Files are organized by date and automatically deduplicated on save.
 
+
+

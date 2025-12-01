@@ -1,136 +1,217 @@
-"""
-リアルタイムで5秒足データをログするスクリプト
-"""
 import sys
+
 from pathlib import Path
+
 from datetime import datetime
+
+
+
 import pandas as pd
 
-# src を import path に追加
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT / "src"))
-
-from ibkr_data.client import create_ib_connection
-from ibkr_data.config import data_config
 from ib_insync import Forex
 
 
-class RealTimeBarLogger:
-    """リアルタイム5秒足データをログするクラス"""
-    
-    def __init__(self, symbol: str = "USDJPY"):
-        self.symbol = symbol
-        self.ib = None
-        self.contract = None
-        self.bars = []
-        self.save_dir = data_config.base_dir / "ibkr" / "fx" / symbol / "sec5"
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.last_save_time = datetime.now()
-        self.save_interval = 60  # 60秒ごとに保存
-        
-    def on_bar_update(self, bars, has_new_bar):
-        """5秒足更新時のコールバック"""
-        if has_new_bar and bars:
-            bar = bars[-1]  # 最新のバー
-            timestamp = bar.date
-            
-            bar_data = {
-                'date': timestamp,
-                'open': bar.open,
-                'high': bar.high,
-                'low': bar.low,
-                'close': bar.close,
-                'volume': bar.volume
-            }
-            
-            self.bars.append(bar_data)
-            print(f"[{timestamp.strftime('%H:%M:%S')}] {self.symbol}: O={bar.open:.3f}, H={bar.high:.3f}, L={bar.low:.3f}, C={bar.close:.3f}, V={bar.volume}")
-            
-            # 定期的に保存（時間間隔またはバッファサイズで）
-            now = datetime.now()
-            if (now - self.last_save_time).total_seconds() >= self.save_interval or len(self.bars) >= 100:
-                self.save_bars()
-    
-    def save_bars(self):
-        """バーデータをParquet形式で保存（自動結合・重複除去）"""
-        if not self.bars:
+
+# src を import path に追加
+
+ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.append(str(ROOT / "src"))
+
+
+
+from ibkr_data.client import create_ib_connection
+
+from ibkr_data.config import data_config
+
+
+
+
+
+def main() -> None:
+
+    ib = create_ib_connection()
+
+    print("Connected to IBKR for real-time 5-sec logger.")
+
+
+
+    contract = Forex("USDJPY")
+
+
+
+    bars_buffer = []
+
+
+
+    def on_bar_update(bars, has_new_bar):
+
+        """
+
+        ib_insync のバージョンによって updateEvent の第1引数は
+
+        RealTimeBarList になる。この場合、bars[-1] が最新バー。
+
+
+
+        RealTimeBar のフィールド名は open_ / high / low / close / volume / wap / count。
+
+        """
+
+        if not has_new_bar:
+
             return
-        
-        df = pd.DataFrame(self.bars)
-        date_str = datetime.now().strftime('%Y%m%d')
-        filename = f"{self.symbol}_sec5_{date_str}.parquet"
-        filepath = self.save_dir / filename
-        
-        # 既存ファイルがあれば読み込んで結合
-        if filepath.exists():
-            try:
-                existing_df = pd.read_parquet(filepath)
-                df = pd.concat([existing_df, df], ignore_index=True)
-                # 重複除去（同じdateの場合は新しい方を保持）
-                df = df.drop_duplicates(subset=['date'], keep='last')
-                df = df.sort_values('date')
-            except Exception as e:
-                print(f"Warning: Could not read existing file {filepath}: {e}")
-        
-        # Parquet形式で保存
-        df.to_parquet(filepath, index=False)
-        print(f"Saved {len(self.bars)} new bars (total {len(df)} bars) to {filepath}")
-        self.bars = []
-        self.last_save_time = datetime.now()
-    
-    def start(self):
-        """ロギングを開始"""
-        self.ib = create_ib_connection()
-        print(f"Connected to IBKR. Starting real-time 5-second bar logging for {self.symbol}")
-        
-        self.contract = Forex(self.symbol)
-        self.ib.qualifyContracts(self.contract)
-        print(f"Contract qualified: {self.contract}")
-        
-        # リアルタイム5秒足を購読
-        bars = self.ib.reqRealTimeBars(
-            self.contract,
-            barSize=5,
-            whatToShow='MIDPOINT',
-            useRTH=False
+
+
+
+        # 最新バーを取得（RealTimeBarList → RealTimeBar）
+
+        bar = bars[-1]
+
+
+
+        dt = bar.time
+
+        if isinstance(dt, datetime) and dt.tzinfo is not None:
+
+            dt = dt.replace(tzinfo=None)
+
+
+
+        bars_buffer.append(
+
+            {
+
+                "time": dt,
+
+                "open": bar.open_,   # 注意: open_ であること
+
+                "high": bar.high,
+
+                "low": bar.low,
+
+                "close": bar.close,
+
+                "volume": bar.volume,
+
+                "wap": bar.wap,
+
+                "count": bar.count,
+
+            }
+
         )
-        
-        # バー更新イベントにコールバックを登録
-        bars.updateEvent += self.on_bar_update
-        
-        print("Logging started. Press Ctrl+C to stop...")
-        
-        try:
-            # メインループ
-            while True:
-                self.ib.sleep(1)
-                # 定期的に保存（念のため）
-                now = datetime.now()
-                if (now - self.last_save_time).total_seconds() >= self.save_interval:
-                    if self.bars:
-                        self.save_bars()
-        except KeyboardInterrupt:
-            print("\nStopping logger...")
-        finally:
-            # 残りのバーを保存
-            if self.bars:
-                self.save_bars()
-            self.ib.disconnect()
-            print("Disconnected.")
 
 
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Real-time 5-second bar logger for FX data from IBKR")
-    parser.add_argument("--symbol", default="USDJPY", help="Currency pair (default: USDJPY)")
-    
-    args = parser.parse_args()
-    
-    logger = RealTimeBarLogger(args.symbol)
-    logger.start()
+
+    # 5秒足リアルタイムバー購読
+
+    rt_bar = ib.reqRealTimeBars(
+
+        contract,
+
+        5,           # barSize (seconds)
+
+        "MIDPOINT",  # whatToShow
+
+        False,       # useRTH
+
+        []           # realTimeBarsOptions
+
+    )
+
+    rt_bar.updateEvent += on_bar_update
+
+
+
+    out_dir = data_config.base_dir / "ibkr" / "fx" / "USDJPY" / "sec5"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+
+
+    def flush_to_disk():
+
+        nonlocal bars_buffer
+
+        if not bars_buffer:
+
+            return
+
+
+
+        df = pd.DataFrame(bars_buffer)
+
+        bars_buffer = []
+
+
+
+        if df.empty:
+
+            return
+
+
+
+        df["time"] = pd.to_datetime(df["time"])
+
+        df.set_index("time", inplace=True)
+
+
+
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
+        out_file = out_dir / f"USDJPY_sec5_{today}.parquet"
+
+
+
+        if out_file.exists():
+
+            old = pd.read_parquet(out_file)
+
+            df = (
+
+                pd.concat([old, df])
+
+                .sort_index()
+
+                .drop_duplicates()
+
+            )
+
+
+
+        df.to_parquet(out_file)
+
+        print(f"Flushed {df.shape[0]} rows to {out_file}")
+
+
+
+    try:
+
+        print("Starting event loop. Press Ctrl+C to stop.")
+
+        while True:
+
+            ib.sleep(10)  # 10秒ごとに flush
+
+            flush_to_disk()
+
+    except KeyboardInterrupt:
+
+        print("KeyboardInterrupt received. Flushing remaining data...")
+
+        flush_to_disk()
+
+    finally:
+
+        ib.disconnect()
+
+        print("Disconnected from IBKR.")
+
+
+
 
 
 if __name__ == "__main__":
-    main()
 
+    main()
